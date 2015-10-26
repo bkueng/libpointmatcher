@@ -61,6 +61,12 @@ template struct ErrorMinimizersImpl<double>::IdentityErrorMinimizer;
 
 // Point To POINT ErrorMinimizer
 template<typename T>
+ErrorMinimizersImpl<T>::PointToPointErrorMinimizer::PointToPointErrorMinimizer(const Parameters& params):
+	ErrorMinimizer("PointToPointErrorMinimizer", PointToPointErrorMinimizer::availableParameters(), params),
+	scalingFactor(Parametrizable::get<T>("scalingFactor"))
+{
+}
+template<typename T>
 typename PointMatcher<T>::TransformationParameters ErrorMinimizersImpl<T>::PointToPointErrorMinimizer::compute(
 	const DataPoints& filteredReading,
 	const DataPoints& filteredReference,
@@ -83,10 +89,14 @@ typename PointMatcher<T>::TransformationParameters ErrorMinimizersImpl<T>::Point
 	mPts.reading.features.colwise() -= meanReading;
 	mPts.reference.features.colwise() -= meanReference;
 
+	const T sigma = mPts.reading.features.topRows(dimCount-1).colwise().squaredNorm().sum() / ptsCount;
+
 	// Singular Value Decomposition
 	const Matrix m(mPts.reference.features.topRows(dimCount-1) * mPts.reading.features.topRows(dimCount-1).transpose());
 	const JacobiSVD<Matrix> svd(m, ComputeThinU | ComputeThinV);
 	Matrix rotMatrix(svd.matrixU() * svd.matrixV().transpose());
+	typedef typename JacobiSVD<Matrix>::SingularValuesType SingularValuesType;
+	SingularValuesType singularValues = svd.singularValues();
 	// It is possible to get a reflection instead of a rotation. In this case, we
 	// take the second best solution, guaranteed to be a rotation. For more details,
 	// read the tech report: "Least-Squares Rigid Motion Using SVD", Olga Sorkine
@@ -96,11 +106,15 @@ typename PointMatcher<T>::TransformationParameters ErrorMinimizersImpl<T>::Point
 		Matrix tmpV = svd.matrixV().transpose();
 		tmpV.row(dimCount-2) *= -1.;
 		rotMatrix = svd.matrixU() * tmpV;
+		singularValues(dimCount-2) *= -1.;
 	}
-	const Vector trVector(meanReference.head(dimCount-1)- rotMatrix * meanReading.head(dimCount-1));
+	T scale = singularValues.sum() / (sigma * ptsCount);
+	if (sigma < 0.0001) scale = T(1);
+	scale = scale - (scale-1.)*(1.-scalingFactor);
+	const Vector trVector(meanReference.head(dimCount-1)- scale * rotMatrix * meanReading.head(dimCount-1));
 	
 	Matrix result(Matrix::Identity(dimCount, dimCount));
-	result.topLeftCorner(dimCount-1, dimCount-1) = rotMatrix;
+	result.topLeftCorner(dimCount-1, dimCount-1) = scale * rotMatrix;
 	result.topRightCorner(dimCount-1, 1) = trVector;
 	
 	return result;

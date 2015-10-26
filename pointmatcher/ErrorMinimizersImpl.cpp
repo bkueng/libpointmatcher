@@ -81,18 +81,25 @@ typename PointMatcher<T>::TransformationParameters ErrorMinimizersImpl<T>::Point
 	const int dimCount(mPts.reading.features.rows());
 	const int ptsCount(mPts.reading.features.cols()); //But point cloud have now the same number of (matched) point
 
-	// Compute the mean of each point cloud
-	const Vector meanReading = mPts.reading.features.rowwise().sum() / ptsCount;
-	const Vector meanReference = mPts.reference.features.rowwise().sum() / ptsCount;
+	// Compute the weighted mean of each point cloud
+	OutlierWeights& w = mPts.weights;
+	const T w_sum_inv = 1./w.sum();
+	Vector meanReading(dimCount), meanReference(dimCount);
+	for (int i = 0; i < dimCount - 1; ++i)
+	{
+		meanReading[i] = mPts.reading.features.row(i).cwiseProduct(w).sum() * w_sum_inv;
+		meanReference[i] = mPts.reference.features.row(i).cwiseProduct(w).sum() * w_sum_inv;
+	}
 	
 	// Remove the mean from the point clouds
 	mPts.reading.features.colwise() -= meanReading;
 	mPts.reference.features.colwise() -= meanReference;
 
-	const T sigma = mPts.reading.features.topRows(dimCount-1).colwise().squaredNorm().sum() / ptsCount;
+	const T sigma = mPts.reading.features.topRows(dimCount-1).colwise().squaredNorm().
+			cwiseProduct(w).sum();
 
 	// Singular Value Decomposition
-	const Matrix m(mPts.reference.features.topRows(dimCount-1) * mPts.reading.features.topRows(dimCount-1).transpose());
+	const Matrix m(mPts.reference.features.topRows(dimCount-1) * w.asDiagonal() * mPts.reading.features.topRows(dimCount-1).transpose());
 	const JacobiSVD<Matrix> svd(m, ComputeThinU | ComputeThinV);
 	Matrix rotMatrix(svd.matrixU() * svd.matrixV().transpose());
 	typedef typename JacobiSVD<Matrix>::SingularValuesType SingularValuesType;
@@ -108,7 +115,7 @@ typename PointMatcher<T>::TransformationParameters ErrorMinimizersImpl<T>::Point
 		rotMatrix = svd.matrixU() * tmpV;
 		singularValues(dimCount-2) *= -1.;
 	}
-	T scale = singularValues.sum() / (sigma * ptsCount);
+	T scale = singularValues.sum() / sigma;
 	if (sigma < 0.0001) scale = T(1);
 	scale = scale - (scale-1.)*(1.-scalingFactor);
 	const Vector trVector(meanReference.head(dimCount-1)- scale * rotMatrix * meanReading.head(dimCount-1));
